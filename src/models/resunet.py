@@ -8,8 +8,8 @@ import torch.nn.functional as F
 from src.contracts import IAnchorBuilder, IStabilizer, ModelPrediction
 from src.models.blocks import NAFBlock
 from src.models.input_assembler import InputAssembler
-from src.registry import ANCHOR_REGISTRY, STABILIZER_REGISTRY
-import src.preprocessing  # noqa: F401 - populate stabilizer and anchor registries
+from src.preprocessing import build_anchor_builder
+from src.registry import STABILIZER_REGISTRY
 
 
 class MultiFrameResUNet(nn.Module):
@@ -116,7 +116,7 @@ class MultiFrameResUNet(nn.Module):
             frames: [B, N, 3, H, W] in [0, 1]
             apply_stabilizer: Whether to run injected global stabilizer (false in train, optional in eval)
         """
-        with torch.no_grad():
+        with torch.no_grad(), torch.amp.autocast(device_type=frames.device.type, enabled=False):
             stab_frames = self.stabilizer.stabilize(frames) if apply_stabilizer else frames
             anchor = self.anchor_builder.build(stab_frames)
             x_in, variance_map = self.input_assembler.assemble(stab_frames, anchor)
@@ -155,18 +155,9 @@ def build_model(cfg: Dict[str, Any]) -> MultiFrameResUNet:
     """Factory wiring dependencies via Registries (Dependency Inversion)."""
     model_cfg = cfg["model"]
 
-    stabilizer_name = "fft_global" if model_cfg.get("stabilize_in_eval", False) else "none"
+    stabilizer_name = str(model_cfg.get("stabilizer_type", "fft_global"))
     stabilizer = STABILIZER_REGISTRY.build(stabilizer_name)
-
-    anchor_type = model_cfg["anchor_type"]
-    if anchor_type == "frf":
-        anchor_builder = ANCHOR_REGISTRY.build(
-            "frf",
-            bandwidth_h=float(model_cfg.get("frf_bandwidth_h", 0.05)),
-            sigma=float(model_cfg.get("frf_sigma", 0.5)),
-        )
-    else:
-        anchor_builder = ANCHOR_REGISTRY.build("mean")
+    anchor_builder = build_anchor_builder(model_cfg)
 
     assembler = InputAssembler(
         num_frames=int(model_cfg["num_frames"]),
