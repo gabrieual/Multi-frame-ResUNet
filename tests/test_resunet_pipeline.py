@@ -95,7 +95,10 @@ class TestResUNetPipeline(unittest.TestCase):
             "A3a": 15,       # 3 * 4 + 3
             "A3b": 16,       # 3 * 4 + 4
             "A3b-FRF": 16,   # 3 * 4 + 4
-            "A3c": 16,       # 3 * 4 + 4
+            "A3c": 16,             # 3 * 4 + 4
+            "A3c-FRF": 16,         # 3 * 4 + 4
+            "A3c-Lucky": 16,       # 3 * 4 + 4
+            "A3c-Lucky-SSIM": 16,  # 3 * 4 + 4
         }
         burst = torch.rand(2, 4, 3, 64, 64)
         for variant in ABLATION_PRESETS:
@@ -165,6 +168,39 @@ class TestResUNetPipeline(unittest.TestCase):
         mean_out = ANCHOR_REGISTRY.build("mean").build(mixed)
         frf_out = ANCHOR_REGISTRY.build("frf", bandwidth_h=0.05, sigma=0.5).build(mixed)
         self.assertGreater(compute_psnr(frf_out, clean), compute_psnr(mean_out, clean))
+
+        # Lucky anchor prefers sharp frame over heavily blurred frames
+        blurred = torch.nn.functional.avg_pool2d(clean, kernel_size=9, stride=1, padding=4)
+        lucky_burst = torch.cat([clean, blurred, blurred, blurred], dim=0).unsqueeze(0)
+        lucky_out = ANCHOR_REGISTRY.build("lucky", tau=4.0, lambda_s=0.02).build(lucky_burst)
+        mean_blur = ANCHOR_REGISTRY.build("mean").build(lucky_burst)
+        self.assertGreater(compute_psnr(lucky_out, clean), compute_psnr(mean_blur, clean))
+
+        # Lucky anchor remains in float32 even inside float16/bfloat16 autocast on flat regions
+        flat_burst = torch.zeros(1, 4, 3, 32, 32)
+        with torch.amp.autocast("cpu", dtype=torch.bfloat16):
+            flat_lucky = ANCHOR_REGISTRY.build("lucky").build(flat_burst)
+        self.assertEqual(flat_lucky.dtype, torch.float32)
+        self.assertTrue(torch.isfinite(flat_lucky).all().item())
+
+    def test_ssim_loss_and_a3c_lucky_composite(self) -> None:
+        cfg_no_ssim = _make_mini_cfg(variant="A3c-Lucky")
+        loss_no_ssim = build_loss(cfg_no_ssim)
+        cfg_lucky = _make_mini_cfg(variant="A3c-Lucky-SSIM")
+        loss_fn = build_loss(cfg_lucky)
+        pred = torch.rand(2, 3, 64, 64, requires_grad=True)
+        target = torch.rand(2, 3, 64, 64)
+
+        self.assertNotIn("ssim", loss_no_ssim(pred, target).components)
+        zero_out = loss_fn(target, target)
+        self.assertLess(zero_out.components["ssim"], 1.0e-5)
+
+        out = loss_fn(pred, target)
+        self.assertIn("ssim", out.components)
+        self.assertGreater(out.components["ssim"], 0.0)
+        out.total.backward()
+        self.assertIsNotNone(pred.grad)
+        self.assertTrue(torch.isfinite(pred.grad).all().item())
 
     def test_optimizer_weight_decay_and_lr_schedule(self) -> None:
         cfg = _make_mini_cfg()
@@ -250,6 +286,7 @@ class TestResUNetPipeline(unittest.TestCase):
         cfg = _make_mini_cfg()
         model = build_model(cfg)
         model.eval()
+        self.assertIsInstance(model.stabilizer, src.preprocessing.FFTGlobalStabilizer)
         evaluator = TiledInference(tile_size=64, overlap=16, max_eval_windows=3, stabilize_in_eval=True)
 
         # Spy on stabilizer calls to ensure full-frame stabilize runs once per burst
@@ -417,7 +454,28 @@ class TestResUNetPipeline(unittest.TestCase):
                     str(cfg_path),
                     "--variant",
                     "A0-frf",
+                    "--num-frames",
+                    "4",
                     "--stabilize",
+                    "--test-root",
+                    str(npy_val),
+                ],
+                cwd=str(RESUNET_ROOT),
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(RESUNET_ROOT / "scripts" / "eval.py"),
+                    "--config",
+                    str(cfg_path),
+                    "--variant",
+                    "A0-lucky",
+                    "--num-frames",
+                    "4",
                     "--test-root",
                     str(npy_val),
                 ],

@@ -123,11 +123,13 @@ class StaticBurstTrainer:
         total_psnr = 0.0
         total_ssim = 0.0
         total_anchor_psnr = 0.0
-        num_batches = 0
+        total_anchor_ssim = 0.0
+        total_samples = 0
         preview_tensors: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
 
         for raw_batch in self.val_loader:
             batch = self._move_batch(raw_batch)
+            bsz = int(batch.gt.shape[0])
             with torch.amp.autocast(
                 device_type=self.device.type,
                 dtype=self.autocast_dtype,
@@ -136,28 +138,31 @@ class StaticBurstTrainer:
                 pred = self.model(batch.degraded, apply_stabilizer=self.stabilize_in_eval)
                 loss_out = self.loss_fn(pred.restored, batch.gt)
 
-            total_loss += float(loss_out.total.item())
-            total_psnr += compute_psnr(pred.restored, batch.gt)
-            total_ssim += compute_ssim(pred.restored, batch.gt)
-            total_anchor_psnr += compute_psnr(pred.anchor, batch.gt)
+            total_loss += float(loss_out.total.item()) * bsz
+            total_psnr += compute_psnr(pred.restored, batch.gt) * bsz
+            total_ssim += compute_ssim(pred.restored, batch.gt) * bsz
+            total_anchor_psnr += compute_psnr(pred.anchor, batch.gt) * bsz
+            total_anchor_ssim += compute_ssim(pred.anchor, batch.gt) * bsz
             if preview_tensors is None:
                 preview_tensors = (
                     pred.anchor.detach().cpu(),
                     pred.restored.detach().cpu(),
                     batch.gt.detach().cpu(),
                 )
-            num_batches += 1
+            total_samples += bsz
 
         self.model.train()
-        if num_batches == 0:
+        if total_samples == 0:
             return {}
 
         metrics = {
-            "val/loss": total_loss / num_batches,
-            "val/psnr": total_psnr / num_batches,
-            "val/ssim": total_ssim / num_batches,
-            "val/anchor_psnr": total_anchor_psnr / num_batches,
-            "val/psnr_gain": (total_psnr - total_anchor_psnr) / num_batches,
+            "val/loss": total_loss / total_samples,
+            "val/psnr": total_psnr / total_samples,
+            "val/ssim": total_ssim / total_samples,
+            "val/anchor_psnr": total_anchor_psnr / total_samples,
+            "val/psnr_gain": (total_psnr - total_anchor_psnr) / total_samples,
+            "val/anchor_ssim": total_anchor_ssim / total_samples,
+            "val/ssim_gain": (total_ssim - total_anchor_ssim) / total_samples,
         }
         self.wandb_logger.log_scalars(metrics, step=step)
 

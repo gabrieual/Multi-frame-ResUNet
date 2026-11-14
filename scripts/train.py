@@ -104,6 +104,7 @@ def parse_args() -> argparse.Namespace:
         choices=["bfloat16", "float16", "float32"],
         help="Override optim.amp_dtype",
     )
+    parser.add_argument("--ssim-weight", type=float, default=None, help="Override loss.ssim_weight")
     parser.add_argument("--seed", type=int, default=None, help="Override experiment.seed")
     parser.add_argument("--wandb-project", type=str, default=None, help="Override experiment.wandb_project")
     parser.add_argument("--wandb-entity", type=str, default=None, help="Override experiment.wandb_entity")
@@ -151,6 +152,8 @@ def _apply_cli_overrides(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[
         cfg["eval"]["log_interval"] = args.log_interval
     if args.amp_dtype is not None:
         cfg["optim"]["amp_dtype"] = args.amp_dtype
+    if args.ssim_weight is not None:
+        cfg["loss"]["ssim_weight"] = args.ssim_weight
     if args.seed is not None:
         cfg["experiment"]["seed"] = args.seed
     if args.wandb_project is not None:

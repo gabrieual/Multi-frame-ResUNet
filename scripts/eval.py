@@ -23,10 +23,11 @@ from src.engine import AtomicCheckpointer, TiledInference  # noqa: E402
 from src.engine.trainer import resolve_amp_config  # noqa: E402
 from src.metrics import compute_psnr, compute_ssim  # noqa: E402
 from src.models import build_model  # noqa: E402
-import src.preprocessing  # noqa: E402, F401
-from src.registry import ANCHOR_REGISTRY, STABILIZER_REGISTRY  # noqa: E402
+from src.preprocessing import build_anchor_builder  # noqa: E402
+from src.registry import STABILIZER_REGISTRY  # noqa: E402
 
-EVAL_VARIANTS = sorted(list(ABLATION_PRESETS.keys()) + ["A0-mean", "A0-frf"])
+CLASSICAL_VARIANTS = {"A0-mean": "mean", "A0-frf": "frf", "A0-lucky": "lucky"}
+EVAL_VARIANTS = sorted(list(ABLATION_PRESETS.keys()) + list(CLASSICAL_VARIANTS.keys()))
 
 
 def _tensor_to_pil(img: torch.Tensor) -> Image.Image:
@@ -49,15 +50,21 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         choices=EVAL_VARIANTS,
-        help="Variant to evaluate (`A0-mean`, `A0-frf`, or `A1..A3c`).",
+        help="Variant to evaluate (`A0-mean`, `A0-frf`, `A0-lucky`, or `A1..A3c-Lucky-SSIM`).",
     )
     parser.add_argument(
         "--checkpoint",
         type=Path,
         default=None,
-        help="Model checkpoint path (required for neural variants A1..A3c).",
+        help="Model checkpoint path (required for neural variants A1..A3c-Lucky-SSIM).",
     )
     parser.add_argument("--test-root", type=str, default=None, help="Override data.val_root")
+    parser.add_argument(
+        "--num-frames",
+        type=int,
+        default=None,
+        help="Override data/model num_frames (useful for classical baselines A0-*).",
+    )
     parser.add_argument("--tile-size", type=int, default=None, help="Override eval.tile_size (256)")
     parser.add_argument("--tile-overlap", type=int, default=None, help="Override eval.tile_overlap")
     parser.add_argument(
@@ -77,20 +84,12 @@ def _evaluate_classical_anchor(
     device: torch.device,
     save_dir: Optional[Path],
 ) -> List[Dict[str, Any]]:
-    anchor_name = "mean" if variant == "A0-mean" else "frf"
-    model_cfg = cfg["model"]
-    if anchor_name == "frf":
-        anchor_builder = ANCHOR_REGISTRY.build(
-            anchor_name,
-            bandwidth_h=float(model_cfg.get("frf_bandwidth_h", 0.05)),
-            sigma=float(model_cfg.get("frf_sigma", 0.5)),
-        )
-    else:
-        anchor_builder = ANCHOR_REGISTRY.build(anchor_name)
+    anchor_name = CLASSICAL_VARIANTS[variant]
+    anchor_builder = build_anchor_builder(cfg["model"], anchor_override=anchor_name).to(device)
     stabilizer = (
-        STABILIZER_REGISTRY.build("fft_global")
+        STABILIZER_REGISTRY.build("fft_global").to(device)
         if evaluator.stabilize_in_eval
-        else STABILIZER_REGISTRY.build("none")
+        else STABILIZER_REGISTRY.build("none").to(device)
     )
     num_frames = int(cfg["data"]["num_frames"])
 
@@ -121,6 +120,8 @@ def _evaluate_classical_anchor(
                 "anchor_psnr": psnr,
                 "psnr_gain": 0.0,
                 "ssim": ssim,
+                "anchor_ssim": ssim,
+                "ssim_gain": 0.0,
             }
         )
         if save_dir is not None:
@@ -157,6 +158,7 @@ def _evaluate_neural_model(
         restored_psnr = compute_psnr(pred.restored, gt_b)
         anchor_psnr = compute_psnr(pred.anchor, gt_b)
         restored_ssim = compute_ssim(pred.restored, gt_b)
+        anchor_ssim = compute_ssim(pred.anchor, gt_b)
         results.append(
             {
                 "sample_id": sample_id,
@@ -165,6 +167,8 @@ def _evaluate_neural_model(
                 "anchor_psnr": anchor_psnr,
                 "psnr_gain": restored_psnr - anchor_psnr,
                 "ssim": restored_ssim,
+                "anchor_ssim": anchor_ssim,
+                "ssim_gain": restored_ssim - anchor_ssim,
             }
         )
         if save_dir is not None:
@@ -181,7 +185,7 @@ def main() -> None:
     base_cfg = load_config(args.config, variant=None)
 
     variant = args.variant
-    is_classical = variant in {"A0-mean", "A0-frf"}
+    is_classical = variant in CLASSICAL_VARIANTS
 
     if not is_classical:
         if args.checkpoint is None:
@@ -203,6 +207,9 @@ def main() -> None:
 
     if args.test_root is not None:
         cfg["data"]["val_root"] = args.test_root
+    if args.num_frames is not None:
+        cfg["data"]["num_frames"] = args.num_frames
+        cfg["model"]["num_frames"] = args.num_frames
     if args.tile_size is not None:
         cfg["eval"]["tile_size"] = args.tile_size
     if args.tile_overlap is not None:
@@ -260,18 +267,22 @@ def main() -> None:
     mean_anchor = float(np.mean([r["anchor_psnr"] for r in sample_results]))
     mean_gain = float(np.mean([r["psnr_gain"] for r in sample_results]))
     mean_ssim = float(np.mean([r["ssim"] for r in sample_results]))
+    mean_anchor_ssim = float(np.mean([r["anchor_ssim"] for r in sample_results]))
+    mean_ssim_gain = float(np.mean([r["ssim_gain"] for r in sample_results]))
 
     print(f"\n=== Evaluation Summary ({label} | {len(sample_results)} samples | Tile {evaluator.tile_size}x{evaluator.tile_size}) ===")
     for row in sample_results:
         print(
             f"  {row['sample_id']:24s} | T={row['num_frames']:3d} | "
             f"Anchor={row['anchor_psnr']:6.2f}dB | Restored={row['psnr']:6.2f}dB "
-            f"({row['psnr_gain']:+5.2f}dB) | SSIM={row['ssim']:.4f}"
+            f"({row['psnr_gain']:+5.2f}dB) | "
+            f"SSIM={row['ssim']:.4f} (Anchor={row['anchor_ssim']:.4f}, {row['ssim_gain']:+.4f})"
         )
     print(
         f"  {'MEAN':24s} |       | "
         f"Anchor={mean_anchor:6.2f}dB | Restored={mean_psnr:6.2f}dB "
-        f"({mean_gain:+5.2f}dB) | SSIM={mean_ssim:.4f}\n"
+        f"({mean_gain:+5.2f}dB) | "
+        f"SSIM={mean_ssim:.4f} (Anchor={mean_anchor_ssim:.4f}, {mean_ssim_gain:+.4f})\n"
     )
 
     if args.output_json is not None:
@@ -287,6 +298,8 @@ def main() -> None:
             "mean_anchor_psnr": mean_anchor,
             "mean_psnr_gain": mean_gain,
             "mean_ssim": mean_ssim,
+            "mean_anchor_ssim": mean_anchor_ssim,
+            "mean_ssim_gain": mean_ssim_gain,
             "samples": sample_results,
         }
         with open(args.output_json, "w", encoding="utf-8") as handle:

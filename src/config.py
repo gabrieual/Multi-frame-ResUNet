@@ -11,32 +11,47 @@ ABLATION_PRESETS: Dict[str, Dict[str, Any]] = {
     "A1": {
         "experiment": {"name": "resunet_A1_single_image_mean", "variant": "A1"},
         "model": {"input_mode": "mean_only", "anchor_type": "mean"},
-        "loss": {"charbonnier_weight": 1.0, "fft_weight": 0.05, "edge_weight": 0.0},
+        "loss": {"charbonnier_weight": 1.0, "fft_weight": 0.05, "edge_weight": 0.0, "ssim_weight": 0.0},
     },
     "A2": {
         "experiment": {"name": "resunet_A2_multiframe_only", "variant": "A2"},
         "model": {"input_mode": "frames_only", "anchor_type": "mean"},
-        "loss": {"charbonnier_weight": 1.0, "fft_weight": 0.05, "edge_weight": 0.0},
+        "loss": {"charbonnier_weight": 1.0, "fft_weight": 0.05, "edge_weight": 0.0, "ssim_weight": 0.0},
     },
     "A3a": {
         "experiment": {"name": "resunet_A3a_frames_plus_anchor", "variant": "A3a"},
         "model": {"input_mode": "frames_anchor", "anchor_type": "mean"},
-        "loss": {"charbonnier_weight": 1.0, "fft_weight": 0.05, "edge_weight": 0.0},
+        "loss": {"charbonnier_weight": 1.0, "fft_weight": 0.05, "edge_weight": 0.0, "ssim_weight": 0.0},
     },
     "A3b": {
         "experiment": {"name": "resunet_A3b_frames_anchor_var", "variant": "A3b"},
         "model": {"input_mode": "full", "anchor_type": "mean"},
-        "loss": {"charbonnier_weight": 1.0, "fft_weight": 0.05, "edge_weight": 0.0},
+        "loss": {"charbonnier_weight": 1.0, "fft_weight": 0.05, "edge_weight": 0.0, "ssim_weight": 0.0},
     },
     "A3b-FRF": {
         "experiment": {"name": "resunet_A3b_FRF_anchor", "variant": "A3b-FRF"},
         "model": {"input_mode": "full", "anchor_type": "frf"},
-        "loss": {"charbonnier_weight": 1.0, "fft_weight": 0.05, "edge_weight": 0.0},
+        "loss": {"charbonnier_weight": 1.0, "fft_weight": 0.05, "edge_weight": 0.0, "ssim_weight": 0.0},
     },
     "A3c": {
         "experiment": {"name": "resunet_A3c_full_edge", "variant": "A3c"},
         "model": {"input_mode": "full", "anchor_type": "mean"},
-        "loss": {"charbonnier_weight": 1.0, "fft_weight": 0.05, "edge_weight": 0.05},
+        "loss": {"charbonnier_weight": 1.0, "fft_weight": 0.05, "edge_weight": 0.05, "ssim_weight": 0.0},
+    },
+    "A3c-FRF": {
+        "experiment": {"name": "resunet_A3c_FRF_edge", "variant": "A3c-FRF"},
+        "model": {"input_mode": "full", "anchor_type": "frf"},
+        "loss": {"charbonnier_weight": 1.0, "fft_weight": 0.05, "edge_weight": 0.05, "ssim_weight": 0.0},
+    },
+    "A3c-Lucky": {
+        "experiment": {"name": "resunet_A3c_Lucky_edge", "variant": "A3c-Lucky"},
+        "model": {"input_mode": "full", "anchor_type": "lucky"},
+        "loss": {"charbonnier_weight": 1.0, "fft_weight": 0.05, "edge_weight": 0.05, "ssim_weight": 0.0},
+    },
+    "A3c-Lucky-SSIM": {
+        "experiment": {"name": "resunet_A3c_Lucky_edge_ssim", "variant": "A3c-Lucky-SSIM"},
+        "model": {"input_mode": "full", "anchor_type": "lucky"},
+        "loss": {"charbonnier_weight": 1.0, "fft_weight": 0.05, "edge_weight": 0.05, "ssim_weight": 0.1},
     },
 }
 
@@ -91,7 +106,7 @@ def validate_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     if mode not in valid_modes:
         raise ValueError(f"Invalid model.input_mode='{mode}'. Valid: {sorted(valid_modes)}")
 
-    valid_anchors = {"mean", "frf"}
+    valid_anchors = {"mean", "frf", "lucky"}
     anchor = model_cfg["anchor_type"]
     if anchor not in valid_anchors:
         raise ValueError(
