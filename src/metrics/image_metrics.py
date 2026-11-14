@@ -71,8 +71,8 @@ def compute_ssim(
     mu2_sq = mu2.pow(2)
     mu1_mu2 = mu1 * mu2
 
-    sigma1_sq = F.conv2d(pred_f * pred_f, window, padding=pad, groups=channels) - mu1_sq
-    sigma2_sq = F.conv2d(target_f * target_f, window, padding=pad, groups=channels) - mu2_sq
+    sigma1_sq = (F.conv2d(pred_f * pred_f, window, padding=pad, groups=channels) - mu1_sq).clamp_min(0.0)
+    sigma2_sq = (F.conv2d(target_f * target_f, window, padding=pad, groups=channels) - mu2_sq).clamp_min(0.0)
     sigma12 = F.conv2d(pred_f * target_f, window, padding=pad, groups=channels) - mu1_mu2
 
     c1 = (0.01 * data_range) ** 2

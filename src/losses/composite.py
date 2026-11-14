@@ -8,6 +8,7 @@ from src.contracts import LossBreakdown
 from src.losses.charbonnier import CharbonnierLoss
 from src.losses.edge_loss import SobelEdgeLoss
 from src.losses.fft_loss import ComplexFFTLoss
+from src.losses.ssim_loss import SSIMLoss
 
 
 class CompositeLoss(nn.Module):
@@ -54,6 +55,11 @@ def build_loss(cfg: Dict[str, Any]) -> CompositeLoss:
             "edge",
             float(loss_cfg.get("edge_weight", 0.0)),
             SobelEdgeLoss(),
+        ),
+        (
+            "ssim",
+            float(loss_cfg.get("ssim_weight", 0.0)),
+            SSIMLoss(),
         ),
     ]
     return CompositeLoss(terms)

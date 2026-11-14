@@ -15,8 +15,9 @@ class CharbonnierLoss(nn.Module):
         self.eps_sq = float(eps) ** 2
 
     def compute(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        diff = pred.float() - target.float()
-        return torch.mean(torch.sqrt(diff * diff + self.eps_sq))
+        with torch.amp.autocast(device_type=pred.device.type, enabled=False):
+            diff = pred.float() - target.float()
+            return torch.mean(torch.sqrt(diff * diff + self.eps_sq))
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         return self.compute(pred, target)
