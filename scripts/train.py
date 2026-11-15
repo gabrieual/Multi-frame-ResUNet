@@ -93,6 +93,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--total-steps", type=int, default=None, help="Override optim.total_steps")
     parser.add_argument("--warmup-steps", type=int, default=None, help="Override optim.warmup_steps")
     parser.add_argument("--batch-size", type=int, default=None, help="Override data.batch_size")
+    parser.add_argument(
+        "--grad-accum-steps",
+        type=int,
+        default=None,
+        help="Override data.grad_accum_steps (effective batch = batch_size * grad_accum_steps)",
+    )
     parser.add_argument("--num-workers", type=int, default=None, help="Override data.num_workers")
     parser.add_argument("--val-interval", type=int, default=None, help="Override eval.val_interval")
     parser.add_argument("--save-interval", type=int, default=None, help="Override eval.save_interval")
@@ -142,6 +148,8 @@ def _apply_cli_overrides(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[
         cfg["optim"]["warmup_steps"] = args.warmup_steps
     if args.batch_size is not None:
         cfg["data"]["batch_size"] = args.batch_size
+    if args.grad_accum_steps is not None:
+        cfg["data"]["grad_accum_steps"] = args.grad_accum_steps
     if args.num_workers is not None:
         cfg["data"]["num_workers"] = args.num_workers
     if args.val_interval is not None:
@@ -269,14 +277,18 @@ def main() -> None:
         )
 
     wandb_logger.start_run(cfg, run_id=resumed_wandb_id, resume="allow")
+    exit_code = 0
     try:
         summary = trainer.train()
         print(
             f"Training finished at step={summary['final_step']} | best_psnr={summary['best_psnr']:.2f}dB",
             flush=True,
         )
+    except BaseException:
+        exit_code = 1
+        raise
     finally:
-        wandb_logger.finish()
+        wandb_logger.finish(exit_code=exit_code)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
@@ -115,6 +116,17 @@ class WandbLogger:
 
         self.run.log({tag: images}, step=int(step))
 
+    @staticmethod
+    def _sanitize_metadata(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Strip or null non-finite floats because W&B validates metadata with allow_nan=False."""
+        clean: Dict[str, Any] = {}
+        for key, val in (metadata or {}).items():
+            if isinstance(val, float) and not math.isfinite(val):
+                clean[key] = None
+            else:
+                clean[key] = val
+        return clean
+
     def log_checkpoint_artifact(
         self,
         checkpoint_path: str | Path,
@@ -132,7 +144,7 @@ class WandbLogger:
         artifact = self._wandb.Artifact(
             name=self._artifact_base,
             type="model",
-            metadata=metadata or {},
+            metadata=self._sanitize_metadata(metadata),
         )
         artifact.add_file(str(path), name=path.name)
         self.run.log_artifact(artifact, aliases=list(aliases))
@@ -170,8 +182,11 @@ class WandbLogger:
         pt_files = sorted(downloaded_dir.glob("*.pt"))
         return pt_files[0] if pt_files else None
 
-    def finish(self) -> None:
-        """Close the active W&B run cleanly."""
+    def finish(self, exit_code: int = 0) -> None:
+        """Close the active W&B run cleanly (passing non-zero exit_code on failure)."""
         if self.enabled and self.run is not None:
-            self.run.finish()
+            if exit_code == 0:
+                self.run.finish()
+            else:
+                self.run.finish(exit_code=int(exit_code))
             self.run = None

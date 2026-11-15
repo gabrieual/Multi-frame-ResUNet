@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 import warnings
 from typing import Any, Dict, Optional, Tuple
@@ -210,10 +211,13 @@ class StaticBurstTrainer:
             scaler=self.scaler,
             wandb_run_id=self.wandb_logger.run_id,
         )
+        metadata: Dict[str, Any] = {"step": step}
+        if math.isfinite(self.best_psnr):
+            metadata["best_psnr"] = self.best_psnr
         self.wandb_logger.log_checkpoint_artifact(
             last_path,
             aliases=["latest", f"step-{step}"],
-            metadata={"step": step, "best_psnr": self.best_psnr},
+            metadata=metadata,
         )
 
     def train(self) -> Dict[str, Any]:

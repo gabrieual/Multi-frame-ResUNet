@@ -345,6 +345,15 @@ class TestResUNetPipeline(unittest.TestCase):
         wb.log_scalars({"train/loss": 0.1}, step=1)
         wb.log_image_grid("val/preview", clean, noisy, clean, step=1)
         fake_run.log.assert_called()
+        with tempfile.NamedTemporaryFile(suffix=".pt") as tmp_ckpt:
+            wb.log_checkpoint_artifact(
+                tmp_ckpt.name,
+                aliases=["latest"],
+                metadata={"step": 1000, "best_psnr": float("-inf")},
+            )
+            artifact_meta = fake_wandb.Artifact.call_args.kwargs["metadata"]
+            json.dumps(artifact_meta, allow_nan=False)
+            self.assertIsNone(artifact_meta["best_psnr"])
         wb.finish()
         fake_run.finish.assert_called_once()
 
