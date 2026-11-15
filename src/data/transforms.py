@@ -30,6 +30,23 @@ class SyncedCropAndAugment:
         gt = F.pad(gt.unsqueeze(0), (0, pad_w, 0, pad_h), mode=mode).squeeze(0)
         return frames, gt
 
+    def augment_only(
+        self, frames: torch.Tensor, gt: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Applies random flips and 90-degree rotations without cropping."""
+        if self.is_train:
+            if random.random() < 0.5:
+                frames = torch.flip(frames, dims=[-1])
+                gt = torch.flip(gt, dims=[-1])
+            if random.random() < 0.5:
+                frames = torch.flip(frames, dims=[-2])
+                gt = torch.flip(gt, dims=[-2])
+            k = random.randint(0, 3)
+            if k > 0:
+                frames = torch.rot90(frames, k=k, dims=[-2, -1])
+                gt = torch.rot90(gt, k=k, dims=[-2, -1])
+        return frames, gt
+
     def __call__(
         self, frames: torch.Tensor, gt: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -53,16 +70,5 @@ class SyncedCropAndAugment:
             frames = frames[:, :, top : top + self.crop_size, left : left + self.crop_size]
             gt = gt[:, top : top + self.crop_size, left : left + self.crop_size]
 
-        if self.is_train:
-            if random.random() < 0.5:
-                frames = torch.flip(frames, dims=[-1])
-                gt = torch.flip(gt, dims=[-1])
-            if random.random() < 0.5:
-                frames = torch.flip(frames, dims=[-2])
-                gt = torch.flip(gt, dims=[-2])
-            k = random.randint(0, 3)
-            if k > 0:
-                frames = torch.rot90(frames, k=k, dims=[-2, -1])
-                gt = torch.rot90(gt, k=k, dims=[-2, -1])
-
+        frames, gt = self.augment_only(frames, gt)
         return frames.contiguous(), gt.contiguous()

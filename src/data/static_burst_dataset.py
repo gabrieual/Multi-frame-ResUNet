@@ -185,29 +185,71 @@ class StaticBurstDataset(Dataset):
             arr = np.asarray(rgb, dtype=np.uint8)
         return torch.from_numpy(np.ascontiguousarray(arr)).permute(2, 0, 1).float().div_(255.0)
 
+    @staticmethod
+    def _tensor_to_float01(tensor: torch.Tensor, source_dtype: np.dtype) -> torch.Tensor:
+        scale = source_dtype == np.uint8 or float(tensor.max().item()) > 1.0
+        out = tensor.to(dtype=torch.float32, memory_format=torch.contiguous_format)
+        return out.div_(255.0) if scale else out
+
+    @classmethod
+    def _to_float_chw(cls, arr: np.ndarray, is_burst: bool) -> torch.Tensor:
+        tensor = torch.from_numpy(arr)
+        if is_burst and tensor.ndim == 4 and tensor.shape[-1] == 3:
+            tensor = tensor.permute(0, 3, 1, 2)
+        elif not is_burst and tensor.ndim == 3 and tensor.shape[-1] == 3:
+            tensor = tensor.permute(2, 0, 1)
+        return cls._tensor_to_float01(tensor, arr.dtype)
+
+    def _load_npy_precropped(self, rec: SampleRecord) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
+        """Slice crop_size directly from uint8 mmap before RAM copy/float conversion."""
+        cs = self.transform.crop_size
+        if cs <= 0:
+            return None
+
+        turb_mmap = np.load(rec.turb_path, mmap_mode="r")
+        gt_mmap = np.load(rec.gt_path, mmap_mode="r")
+        if (
+            turb_mmap.ndim != 4
+            or turb_mmap.shape[-1] != 3
+            or gt_mmap.ndim != 3
+            or gt_mmap.shape[-1] != 3
+        ):
+            return None
+
+        _, h, w, _ = turb_mmap.shape
+        if h < cs or w < cs or gt_mmap.shape[0] != h or gt_mmap.shape[1] != w:
+            return None
+
+        if self.is_train:
+            top = random.randint(0, h - cs)
+            left = random.randint(0, w - cs)
+        else:
+            top = (h - cs) // 2
+            left = (w - cs) // 2
+
+        indices = self._select_indices(int(turb_mmap.shape[0]))
+        frames_np = np.array(turb_mmap[indices, top : top + cs, left : left + cs, :], copy=True, order="C")
+        gt_np = np.array(gt_mmap[top : top + cs, left : left + cs, :], copy=True, order="C")
+
+        frames_u8 = torch.from_numpy(frames_np).permute(0, 3, 1, 2)
+        gt_u8 = torch.from_numpy(gt_np).permute(2, 0, 1)
+        frames_u8, gt_u8 = self.transform.augment_only(frames_u8, gt_u8)
+
+        return (
+            self._tensor_to_float01(frames_u8, frames_np.dtype),
+            self._tensor_to_float01(gt_u8, gt_np.dtype),
+        )
+
     def _load_sample_tensors(self, rec: SampleRecord) -> Tuple[torch.Tensor, torch.Tensor]:
         if rec.is_npy:
             turb_mmap = np.load(rec.turb_path, mmap_mode="r")
             indices = self._select_indices(int(turb_mmap.shape[0]))
             # Read only selected frames from mmap into contiguous float tensor [N, 3, H, W]
-            frames_np = np.ascontiguousarray(turb_mmap[indices])
-            gt_np = np.ascontiguousarray(np.load(rec.gt_path))
-            if frames_np.ndim == 4 and frames_np.shape[-1] == 3:
-                frames = torch.from_numpy(frames_np).permute(0, 3, 1, 2).float()
-            else:
-                frames = torch.from_numpy(frames_np).float()
-            if frames_np.dtype == np.uint8 or frames.max() > 1.0:
-                frames = frames.div_(255.0)
-
+            frames_np = np.array(turb_mmap[indices], copy=True, order="C")
+            gt_np = np.array(np.load(rec.gt_path, mmap_mode="r"), copy=True, order="C")
             if gt_np.ndim == 4:
                 gt_np = np.ascontiguousarray(gt_np[0])
-            if gt_np.ndim == 3 and gt_np.shape[-1] == 3:
-                gt = torch.from_numpy(gt_np).permute(2, 0, 1).float()
-            else:
-                gt = torch.from_numpy(gt_np).float()
-            if gt_np.dtype == np.uint8 or gt.max() > 1.0:
-                gt = gt.div_(255.0)
-            return frames, gt
+            return self._to_float_chw(frames_np, is_burst=True), self._to_float_chw(gt_np, is_burst=False)
 
         frame_paths = _list_images(rec.turb_path)
         indices = self._select_indices(len(frame_paths))
@@ -226,6 +268,11 @@ class StaticBurstDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, str]:
         rec = self.samples[idx]
+        if rec.is_npy:
+            precropped = self._load_npy_precropped(rec)
+            if precropped is not None:
+                frames, gt = precropped
+                return frames, gt, rec.sample_id
         frames, gt = self._load_sample_tensors(rec)
         frames, gt = self.transform(frames, gt)
         return frames, gt, rec.sample_id
