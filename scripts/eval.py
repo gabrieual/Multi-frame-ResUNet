@@ -21,7 +21,7 @@ from src.config import ABLATION_PRESETS, apply_variant_preset, load_config, vali
 from src.data import StaticBurstDataset  # noqa: E402
 from src.engine import AtomicCheckpointer, TiledInference  # noqa: E402
 from src.engine.trainer import resolve_amp_config  # noqa: E402
-from src.metrics import compute_psnr, compute_ssim  # noqa: E402
+from src.metrics import compute_cw_ssim, compute_psnr, compute_ssim  # noqa: E402
 from src.models import build_model  # noqa: E402
 from src.preprocessing import build_anchor_builder  # noqa: E402
 from src.registry import STABILIZER_REGISTRY  # noqa: E402
@@ -112,6 +112,7 @@ def _evaluate_classical_anchor(
         pred = acc / float(len(windows))
         psnr = compute_psnr(pred, gt_b)
         ssim = compute_ssim(pred, gt_b)
+        cw_ssim = compute_cw_ssim(pred, gt_b)
         results.append(
             {
                 "sample_id": sample_id,
@@ -122,6 +123,9 @@ def _evaluate_classical_anchor(
                 "ssim": ssim,
                 "anchor_ssim": ssim,
                 "ssim_gain": 0.0,
+                "cw_ssim": cw_ssim,
+                "anchor_cw_ssim": cw_ssim,
+                "cw_ssim_gain": 0.0,
             }
         )
         if save_dir is not None:
@@ -159,6 +163,8 @@ def _evaluate_neural_model(
         anchor_psnr = compute_psnr(pred.anchor, gt_b)
         restored_ssim = compute_ssim(pred.restored, gt_b)
         anchor_ssim = compute_ssim(pred.anchor, gt_b)
+        restored_cw_ssim = compute_cw_ssim(pred.restored, gt_b)
+        anchor_cw_ssim = compute_cw_ssim(pred.anchor, gt_b)
         results.append(
             {
                 "sample_id": sample_id,
@@ -169,6 +175,9 @@ def _evaluate_neural_model(
                 "ssim": restored_ssim,
                 "anchor_ssim": anchor_ssim,
                 "ssim_gain": restored_ssim - anchor_ssim,
+                "cw_ssim": restored_cw_ssim,
+                "anchor_cw_ssim": anchor_cw_ssim,
+                "cw_ssim_gain": restored_cw_ssim - anchor_cw_ssim,
             }
         )
         if save_dir is not None:
@@ -269,6 +278,9 @@ def main() -> None:
     mean_ssim = float(np.mean([r["ssim"] for r in sample_results]))
     mean_anchor_ssim = float(np.mean([r["anchor_ssim"] for r in sample_results]))
     mean_ssim_gain = float(np.mean([r["ssim_gain"] for r in sample_results]))
+    mean_cw_ssim = float(np.mean([r["cw_ssim"] for r in sample_results]))
+    mean_anchor_cw_ssim = float(np.mean([r["anchor_cw_ssim"] for r in sample_results]))
+    mean_cw_ssim_gain = float(np.mean([r["cw_ssim_gain"] for r in sample_results]))
 
     print(f"\n=== Evaluation Summary ({label} | {len(sample_results)} samples | Tile {evaluator.tile_size}x{evaluator.tile_size}) ===")
     for row in sample_results:
@@ -276,13 +288,15 @@ def main() -> None:
             f"  {row['sample_id']:24s} | T={row['num_frames']:3d} | "
             f"Anchor={row['anchor_psnr']:6.2f}dB | Restored={row['psnr']:6.2f}dB "
             f"({row['psnr_gain']:+5.2f}dB) | "
-            f"SSIM={row['ssim']:.4f} (Anchor={row['anchor_ssim']:.4f}, {row['ssim_gain']:+.4f})"
+            f"SSIM={row['ssim']:.4f} (Anchor={row['anchor_ssim']:.4f}, {row['ssim_gain']:+.4f}) | "
+            f"CW-SSIM={row['cw_ssim']:.4f} ({row['cw_ssim_gain']:+.4f})"
         )
     print(
         f"  {'MEAN':24s} |       | "
         f"Anchor={mean_anchor:6.2f}dB | Restored={mean_psnr:6.2f}dB "
         f"({mean_gain:+5.2f}dB) | "
-        f"SSIM={mean_ssim:.4f} (Anchor={mean_anchor_ssim:.4f}, {mean_ssim_gain:+.4f})\n"
+        f"SSIM={mean_ssim:.4f} (Anchor={mean_anchor_ssim:.4f}, {mean_ssim_gain:+.4f}) | "
+        f"CW-SSIM={mean_cw_ssim:.4f} (Anchor={mean_anchor_cw_ssim:.4f}, {mean_cw_ssim_gain:+.4f})\n"
     )
 
     if args.output_json is not None:
@@ -300,6 +314,9 @@ def main() -> None:
             "mean_ssim": mean_ssim,
             "mean_anchor_ssim": mean_anchor_ssim,
             "mean_ssim_gain": mean_ssim_gain,
+            "mean_cw_ssim": mean_cw_ssim,
+            "mean_anchor_cw_ssim": mean_anchor_cw_ssim,
+            "mean_cw_ssim_gain": mean_cw_ssim_gain,
             "samples": sample_results,
         }
         with open(args.output_json, "w", encoding="utf-8") as handle:

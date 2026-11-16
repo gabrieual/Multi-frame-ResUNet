@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 
 from ..contracts import BurstBatch
 from ..losses.composite import CompositeLoss
-from ..metrics.image_metrics import compute_psnr, compute_ssim
+from ..metrics.image_metrics import compute_cw_ssim, compute_psnr, compute_ssim
 from ..models.resunet import MultiFrameResUNet
 from .checkpoint import AtomicCheckpointer
 from .wandb_logger import WandbLogger
@@ -123,8 +123,10 @@ class StaticBurstTrainer:
         total_loss = 0.0
         total_psnr = 0.0
         total_ssim = 0.0
+        total_cw_ssim = 0.0
         total_anchor_psnr = 0.0
         total_anchor_ssim = 0.0
+        total_anchor_cw_ssim = 0.0
         total_samples = 0
         preview_tensors: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
 
@@ -142,8 +144,10 @@ class StaticBurstTrainer:
             total_loss += float(loss_out.total.item()) * bsz
             total_psnr += compute_psnr(pred.restored, batch.gt) * bsz
             total_ssim += compute_ssim(pred.restored, batch.gt) * bsz
+            total_cw_ssim += compute_cw_ssim(pred.restored, batch.gt) * bsz
             total_anchor_psnr += compute_psnr(pred.anchor, batch.gt) * bsz
             total_anchor_ssim += compute_ssim(pred.anchor, batch.gt) * bsz
+            total_anchor_cw_ssim += compute_cw_ssim(pred.anchor, batch.gt) * bsz
             if preview_tensors is None:
                 preview_tensors = (
                     pred.anchor.detach().cpu(),
@@ -160,10 +164,13 @@ class StaticBurstTrainer:
             "val/loss": total_loss / total_samples,
             "val/psnr": total_psnr / total_samples,
             "val/ssim": total_ssim / total_samples,
+            "val/cw_ssim": total_cw_ssim / total_samples,
             "val/anchor_psnr": total_anchor_psnr / total_samples,
             "val/psnr_gain": (total_psnr - total_anchor_psnr) / total_samples,
             "val/anchor_ssim": total_anchor_ssim / total_samples,
             "val/ssim_gain": (total_ssim - total_anchor_ssim) / total_samples,
+            "val/anchor_cw_ssim": total_anchor_cw_ssim / total_samples,
+            "val/cw_ssim_gain": (total_cw_ssim - total_anchor_cw_ssim) / total_samples,
         }
         self.wandb_logger.log_scalars(metrics, step=step)
 

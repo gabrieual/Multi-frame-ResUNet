@@ -33,7 +33,7 @@ from src.engine import (  # noqa: E402
 )
 from src.engine.optimizer_factory import split_decay_parameters  # noqa: E402
 from src.losses import build_loss  # noqa: E402
-from src.metrics import compute_psnr, compute_ssim  # noqa: E402
+from src.metrics import compute_cw_ssim, compute_psnr, compute_ssim  # noqa: E402
 from src.models import LayerNorm2d, build_model  # noqa: E402
 import src.preprocessing  # noqa: E402, F401
 from src.registry import ANCHOR_REGISTRY, STABILIZER_REGISTRY  # noqa: E402
@@ -329,6 +329,10 @@ class TestResUNetPipeline(unittest.TestCase):
         noisy = (clean + 0.05).clamp(0.0, 1.0)
         self.assertGreater(compute_psnr(clean, clean), compute_psnr(noisy, clean))
         self.assertGreater(compute_ssim(clean, clean), compute_ssim(noisy, clean))
+        self.assertAlmostEqual(compute_cw_ssim(clean, clean), 1.0, places=5)
+        self.assertGreater(compute_cw_ssim(clean, clean), compute_cw_ssim(noisy, clean))
+        shifted = torch.roll(clean, shifts=1, dims=-1)
+        self.assertGreater(compute_cw_ssim(shifted, clean), compute_ssim(shifted, clean))
 
         # Mocked W&B integration test
         fake_run = MagicMock()
