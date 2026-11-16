@@ -1,6 +1,6 @@
 """Static reference anchor builders (Mean, CDSP FRF, and Lucky Sharpness Fusion)."""
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -103,17 +103,20 @@ class LuckyAnchorBuilder(nn.Module):
         self.register_buffer("sobel_y", ky.view(1, 1, 3, 3), persistent=False)
 
     @torch.no_grad()
-    def build(self, frames: torch.Tensor) -> torch.Tensor:
+    def build_with_frf(self, frames: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
+        Compute `(lucky_anchor, frf_anchor)` in a single pass without redundant FRF work.
+
         Args:
             frames: [B, N, 3, H, W] in [0, 1]
         Returns:
-            lucky_anchor: [B, 3, H, W]
+            (lucky_anchor, frf_anchor): both [B, 3, H, W]
         """
         orig_dtype = frames.dtype
         b, n, _, h, w = frames.shape
         if n <= 1:
-            return frames[:, 0]
+            single = frames[:, 0]
+            return single, single
 
         with torch.amp.autocast(device_type=frames.device.type, enabled=False):
             frames_f32 = frames.float()
@@ -149,7 +152,18 @@ class LuckyAnchorBuilder(nn.Module):
             weights = torch.softmax(self.tau * norm_priority, dim=1)  # [B, N, H, W]
 
             lucky = (frames_f32 * weights.unsqueeze(2)).sum(dim=1)
-        return lucky.to(orig_dtype)
+        return lucky.to(orig_dtype), ref.to(orig_dtype)
+
+    @torch.no_grad()
+    def build(self, frames: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            frames: [B, N, 3, H, W] in [0, 1]
+        Returns:
+            lucky_anchor: [B, 3, H, W]
+        """
+        lucky, _ = self.build_with_frf(frames)
+        return lucky
 
     def forward(self, frames: torch.Tensor) -> torch.Tensor:
         return self.build(frames)

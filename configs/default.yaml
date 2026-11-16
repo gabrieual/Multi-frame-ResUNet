@@ -1,6 +1,6 @@
 experiment:
   name: "multiframe_resunet_a3c"
-  variant: "A3c"                   # A1 | A2 | A3a | A3b | A3b-FRF | A3c | A3c-FRF | A3c-Lucky | A3c-Lucky-SSIM (override via --variant)
+  variant: "A3c"                   # A1..A3c-Lucky-SSIM | A4-FRFLucky-CW | A4-PreAlign | A4-Mamba (override via --variant)
   output_dir: "./runs"
   seed: 42
   use_wandb: true
@@ -31,8 +31,14 @@ model:
   ffn_expand: 2
   drop_out_rate: 0.0
   num_frames: 8
-  input_mode: "full"               # mean_only | frames_only | frames_anchor | full
+  input_mode: "full"               # mean_only | frames_only | frames_anchor | full | full_frf_lucky
   anchor_type: "mean"              # mean | frf | lucky
+  use_pre_align: false             # Stage-1 PreStemFlowAligner before UNet stem
+  pre_align_hidden_ch: 24
+  pre_align_max_shift: 12.0
+  middle_type: "naf"               # naf | ss2d (pure-PyTorch 2D Mamba bottleneck)
+  mamba_d_state: 8
+  mamba_ssm_expand: 0.5
   stabilize_in_train: false        # Never stabilize during supervised training
   stabilize_in_eval: false         # Enable for real handheld/windy footage
   frf_bandwidth_h: 0.05
@@ -46,6 +52,7 @@ loss:
   fft_weight: 0.05
   edge_weight: 0.05
   ssim_weight: 0.0
+  cw_ssim_weight: 0.0
 
 optim:
   lr: 2.0e-4

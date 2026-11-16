@@ -111,6 +111,29 @@ def parse_args() -> argparse.Namespace:
         help="Override optim.amp_dtype",
     )
     parser.add_argument("--ssim-weight", type=float, default=None, help="Override loss.ssim_weight")
+    parser.add_argument(
+        "--cw-ssim-weight", type=float, default=None, help="Override loss.cw_ssim_weight"
+    )
+    parser.add_argument(
+        "--input-mode",
+        type=str,
+        default=None,
+        choices=["mean_only", "frames_only", "frames_anchor", "full", "full_frf_lucky"],
+        help="Override model.input_mode",
+    )
+    parser.add_argument(
+        "--pre-align",
+        action="store_true",
+        default=None,
+        help="Enable Stage-1 PreStemFlowAligner (model.use_pre_align=true)",
+    )
+    parser.add_argument(
+        "--middle-type",
+        type=str,
+        default=None,
+        choices=["naf", "ss2d"],
+        help="Override model.middle_type (naf or ss2d Mamba2D)",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Override experiment.seed")
     parser.add_argument("--wandb-project", type=str, default=None, help="Override experiment.wandb_project")
     parser.add_argument("--wandb-entity", type=str, default=None, help="Override experiment.wandb_entity")
@@ -162,6 +185,14 @@ def _apply_cli_overrides(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[
         cfg["optim"]["amp_dtype"] = args.amp_dtype
     if args.ssim_weight is not None:
         cfg["loss"]["ssim_weight"] = args.ssim_weight
+    if args.cw_ssim_weight is not None:
+        cfg["loss"]["cw_ssim_weight"] = args.cw_ssim_weight
+    if args.input_mode is not None:
+        cfg["model"]["input_mode"] = args.input_mode
+    if args.pre_align:
+        cfg["model"]["use_pre_align"] = True
+    if args.middle_type is not None:
+        cfg["model"]["middle_type"] = args.middle_type
     if args.seed is not None:
         cfg["experiment"]["seed"] = args.seed
     if args.wandb_project is not None:

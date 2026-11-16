@@ -10,7 +10,7 @@ import torch.nn as nn
 
 from ..models.blocks import LayerNorm2d
 
-_NO_DECAY_PARAM_NAMES = {"beta", "gamma", "bias"}
+_NO_DECAY_PARAM_NAMES = {"beta", "gamma", "bias", "a_log", "d_skip"}
 
 
 class WarmupCosineLambda:

@@ -34,9 +34,10 @@ from src.engine import (  # noqa: E402
 from src.engine.optimizer_factory import split_decay_parameters  # noqa: E402
 from src.losses import build_loss  # noqa: E402
 from src.metrics import compute_cw_ssim, compute_psnr, compute_ssim  # noqa: E402
-from src.models import LayerNorm2d, build_model  # noqa: E402
+from src.models import LayerNorm2d, PreStemFlowAligner, SS2DBlock, build_model  # noqa: E402
+from src.models.mamba2d import parallel_selective_scan  # noqa: E402
 import src.preprocessing  # noqa: E402, F401
-from src.registry import ANCHOR_REGISTRY, STABILIZER_REGISTRY  # noqa: E402
+from src.registry import ANCHOR_REGISTRY, LOSS_REGISTRY, STABILIZER_REGISTRY  # noqa: E402
 
 
 def _make_mini_cfg(
@@ -99,6 +100,9 @@ class TestResUNetPipeline(unittest.TestCase):
             "A3c-FRF": 16,         # 3 * 4 + 4
             "A3c-Lucky": 16,       # 3 * 4 + 4
             "A3c-Lucky-SSIM": 16,  # 3 * 4 + 4
+            "A4-FRFLucky-CW": 19,  # 3 * 4 + 7 (frames + FRF + Lucky + U_var)
+            "A4-PreAlign": 16,     # 3 * 4 + 4
+            "A4-Mamba": 16,        # 3 * 4 + 4
         }
         burst = torch.rand(2, 4, 3, 64, 64)
         for variant in ABLATION_PRESETS:
@@ -527,6 +531,119 @@ class TestResUNetPipeline(unittest.TestCase):
             self.assertEqual(report_a3c["num_samples"], 1)
             self.assertTrue((vis_dir / "seq_00" / "restored.png").is_file())
             self.assertTrue((vis_dir / "seq_00" / "comparison_anchor_restored_gt.png").is_file())
+
+    def test_a4_frf_lucky_and_cw_ssim_loss(self) -> None:
+        cfg_f16 = load_config(RESUNET_ROOT / "configs" / "default.yaml", variant="A4-FRFLucky-CW")
+        cfg_f16["data"]["num_frames"] = 16
+        cfg_f16["model"]["num_frames"] = 16
+        cfg_f16["model"]["base_ch"] = 48
+        validate_config(cfg_f16)
+        model_f16 = build_model(cfg_f16)
+        self.assertEqual(model_f16.input_assembler.in_channels, 55)
+
+        lucky_builder = ANCHOR_REGISTRY.build("lucky")
+        frf_builder = ANCHOR_REGISTRY.build("frf")
+        burst = torch.rand(2, 4, 3, 48, 48)
+        lucky_out, frf_out = lucky_builder.build_with_frf(burst)
+        self.assertTrue(torch.allclose(lucky_out, lucky_builder.build(burst), atol=1.0e-6))
+        self.assertTrue(torch.allclose(frf_out, frf_builder.build(burst), atol=1.0e-6))
+
+        cfg_cw = _make_mini_cfg(variant="A4-FRFLucky-CW")
+        loss_fn = build_loss(cfg_cw)
+        pred = torch.rand(2, 3, 64, 64, requires_grad=True)
+        target = torch.rand(2, 3, 64, 64)
+        exact = loss_fn(target, target)
+        self.assertIn("cw_ssim", exact.components)
+        self.assertLess(exact.components["cw_ssim"], 1.0e-5)
+
+        with torch.amp.autocast("cpu", dtype=torch.bfloat16):
+            out = loss_fn(pred, target)
+        self.assertTrue(torch.isfinite(out.total).item())
+        self.assertGreater(out.components["cw_ssim"], 0.0)
+        out.total.backward()
+        self.assertIsNotNone(pred.grad)
+        self.assertGreater(pred.grad.abs().sum().item(), 0.0)
+        self.assertIn("cw_ssim", LOSS_REGISTRY.available())
+
+    def test_a4_pre_align_flow_identity_odd_shapes_and_gradient_flow(self) -> None:
+        aligner = PreStemFlowAligner(hidden_ch=16, max_shift=8.0)
+        burst_odd = torch.rand(1, 4, 3, 37, 51)
+        ref_odd = burst_odd.mean(dim=1)
+        warped, flow = aligner(burst_odd, ref_odd)
+        self.assertEqual(warped.shape, burst_odd.shape)
+        self.assertEqual(flow.shape, (1, 4, 2, 37, 51))
+        # Zero-init flow_head implies flow == 0 and identity warp initially (within float32 grid_sample tolerance)
+        self.assertLess(flow.abs().max().item(), 1.0e-7)
+        self.assertTrue(torch.allclose(warped, burst_odd, atol=1.0e-5))
+
+        cfg = _make_mini_cfg(variant="A4-PreAlign")
+        model = build_model(cfg)
+        self.assertIsNotNone(model.pre_aligner)
+        # Non-zero head weight simulates step >= 1 so gradients flow back into flow_head
+        with torch.no_grad():
+            model.head.weight.fill_(1.0e-2)
+        x = torch.rand(2, 4, 3, 64, 64)
+        pred = model(x)
+        loss = pred.restored.square().mean()
+        loss.backward()
+        assert model.pre_aligner is not None
+        flow_grad = model.pre_aligner.flow_head.weight.grad
+        self.assertIsNotNone(flow_grad)
+        self.assertGreater(flow_grad.abs().sum().item(), 0.0)
+
+    def test_a4_mamba_parallel_scan_global_receptive_field_and_no_decay(self) -> None:
+        torch.manual_seed(0)
+        a = torch.sigmoid(torch.randn(2, 8, 4, 32))
+        u = torch.randn(2, 8, 4, 32)
+        h_par = parallel_selective_scan(a, u)
+
+        h_seq_list = []
+        h_prev = torch.zeros_like(u[..., 0])
+        for t in range(32):
+            h_prev = a[..., t] * h_prev + u[..., t]
+            h_seq_list.append(h_prev)
+        h_seq = torch.stack(h_seq_list, dim=-1)
+        self.assertTrue(torch.allclose(h_par, h_seq, atol=1.0e-5, rtol=1.0e-5))
+
+        # Single SS2DBlock propagates perturbation from top-left (0, 0) to bottom-right (15, 15)
+        block = SS2DBlock(channels=32, d_state=4, ssm_expand=0.5)
+        with torch.no_grad():
+            block.beta.fill_(1.0)
+        inp_a = torch.randn(1, 32, 16, 16)
+        inp_b = inp_a.clone()
+        inp_b[:, 0::2, 0, 0] += 5.0  # Channel-varying perturbation avoids LayerNorm2d constant-shift invariance
+        out_a = block(inp_a)
+        out_b = block(inp_b)
+        corner_diff = (out_b[:, :, -1, -1] - out_a[:, :, -1, -1]).abs().max().item()
+        self.assertGreater(corner_diff, 1.0e-6)
+
+        # Model build, float16 norm/scan safety, and no_decay parameter grouping
+        cfg = _make_mini_cfg(variant="A4-Mamba")
+        model = build_model(cfg)
+        self.assertEqual(model.middle_type, "ss2d")
+        decay_params, no_decay_params = split_decay_parameters(model)
+        no_decay_ids = {id(p) for p in no_decay_params}
+        for name, param in model.named_parameters():
+            if name.endswith(("a_log", "d_skip", "beta", "gamma", "bias")):
+                self.assertIn(id(param), no_decay_ids, f"Expected {name} in no_decay group")
+        self.assertGreater(len(decay_params), 0)
+
+        p48_mamba = sum(
+            p.numel()
+            for p in build_model(load_config(RESUNET_ROOT / "configs" / "default.yaml", variant="A4-Mamba")).parameters()
+        )
+        print(f"[verified A4-Mamba base_ch=48 params] -> {p48_mamba:,}")
+        with torch.no_grad():
+            model.head.weight.fill_(1.0e-2)
+            for blk in model.middle:
+                blk.beta.fill_(1.0)
+                blk.gamma.fill_(1.0)
+        pred = model(torch.rand(2, 4, 3, 64, 64))
+        pred.restored.mean().backward()
+        self.assertIsNotNone(model.middle[0].row_ssm.a_log.grad)
+        self.assertGreater(model.middle[0].row_ssm.a_log.grad.abs().sum().item(), 0.0)
+        self.assertIsNotNone(model.middle[0].col_ssm.a_log.grad)
+        self.assertGreater(model.middle[0].col_ssm.a_log.grad.abs().sum().item(), 0.0)
 
 
 if __name__ == "__main__":

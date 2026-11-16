@@ -6,6 +6,7 @@ import torch.nn as nn
 
 from src.contracts import LossBreakdown
 from src.losses.charbonnier import CharbonnierLoss
+from src.losses.cw_ssim_loss import ComplexWaveletSSIMLoss
 from src.losses.edge_loss import SobelEdgeLoss
 from src.losses.fft_loss import ComplexFFTLoss
 from src.losses.ssim_loss import SSIMLoss
@@ -60,6 +61,11 @@ def build_loss(cfg: Dict[str, Any]) -> CompositeLoss:
             "ssim",
             float(loss_cfg.get("ssim_weight", 0.0)),
             SSIMLoss(),
+        ),
+        (
+            "cw_ssim",
+            float(loss_cfg.get("cw_ssim_weight", 0.0)),
+            ComplexWaveletSSIMLoss(),
         ),
     ]
     return CompositeLoss(terms)

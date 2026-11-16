@@ -53,6 +53,58 @@ ABLATION_PRESETS: Dict[str, Dict[str, Any]] = {
         "model": {"input_mode": "full", "anchor_type": "lucky"},
         "loss": {"charbonnier_weight": 1.0, "fft_weight": 0.05, "edge_weight": 0.05, "ssim_weight": 0.1},
     },
+    # Etapa 2 (CLEAR-inspired upgrades over A3c-Lucky-SSIM):
+    # 1) Dual FRF + Lucky anchor stack in stem + Complex Wavelet SSIM phase-aware loss
+    "A4-FRFLucky-CW": {
+        "experiment": {"name": "resunet_A4_frf_lucky_cw", "variant": "A4-FRFLucky-CW"},
+        "model": {
+            "input_mode": "full_frf_lucky",
+            "anchor_type": "lucky",
+            "use_pre_align": False,
+            "middle_type": "naf",
+        },
+        "loss": {
+            "charbonnier_weight": 1.0,
+            "fft_weight": 0.05,
+            "edge_weight": 0.05,
+            "ssim_weight": 0.1,
+            "cw_ssim_weight": 0.1,
+        },
+    },
+    # 2) Two-stage geometric registration (Pre-Stem Flow Aligner -> ResUNet)
+    "A4-PreAlign": {
+        "experiment": {"name": "resunet_A4_pre_align", "variant": "A4-PreAlign"},
+        "model": {
+            "input_mode": "full",
+            "anchor_type": "lucky",
+            "use_pre_align": True,
+            "middle_type": "naf",
+        },
+        "loss": {
+            "charbonnier_weight": 1.0,
+            "fft_weight": 0.05,
+            "edge_weight": 0.05,
+            "ssim_weight": 0.1,
+            "cw_ssim_weight": 0.0,
+        },
+    },
+    # 3) Global 2D State-Space context (pure-PyTorch SS2D Mamba) in bottleneck middle
+    "A4-Mamba": {
+        "experiment": {"name": "resunet_A4_mamba_middle", "variant": "A4-Mamba"},
+        "model": {
+            "input_mode": "full",
+            "anchor_type": "lucky",
+            "use_pre_align": False,
+            "middle_type": "ss2d",
+        },
+        "loss": {
+            "charbonnier_weight": 1.0,
+            "fft_weight": 0.05,
+            "edge_weight": 0.05,
+            "ssim_weight": 0.1,
+            "cw_ssim_weight": 0.0,
+        },
+    },
 }
 
 
@@ -101,10 +153,17 @@ def validate_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
             f"data.num_frames ({data_n}) must equal model.num_frames ({model_n})."
         )
 
-    valid_modes = {"mean_only", "frames_only", "frames_anchor", "full"}
+    valid_modes = {"mean_only", "frames_only", "frames_anchor", "full", "full_frf_lucky"}
     mode = model_cfg["input_mode"]
     if mode not in valid_modes:
         raise ValueError(f"Invalid model.input_mode='{mode}'. Valid: {sorted(valid_modes)}")
+
+    valid_middle_types = {"naf", "ss2d"}
+    middle_type = str(model_cfg.get("middle_type", "naf")).strip().lower()
+    if middle_type not in valid_middle_types:
+        raise ValueError(
+            f"Invalid model.middle_type='{middle_type}'. Valid: {sorted(valid_middle_types)}"
+        )
 
     valid_anchors = {"mean", "frf", "lucky"}
     anchor = model_cfg["anchor_type"]

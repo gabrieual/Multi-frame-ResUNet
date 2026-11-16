@@ -1,6 +1,6 @@
-"""Input tensor assembly (Single Responsibility) supporting ablation modes A1..A3c."""
+"""Input tensor assembly (Single Responsibility) supporting ablation modes A1..A4."""
 
-from typing import Tuple
+from typing import Optional, Tuple
 import torch
 
 from src.preprocessing.variance import compute_temporal_std
@@ -12,7 +12,7 @@ class InputAssembler:
     according to `input_mode`, keeping channel counts synchronized with the stem conv.
     """
 
-    VALID_MODES = ("mean_only", "frames_only", "frames_anchor", "full")
+    VALID_MODES = ("mean_only", "frames_only", "frames_anchor", "full", "full_frf_lucky")
 
     def __init__(self, num_frames: int, input_mode: str = "full") -> None:
         if input_mode not in self.VALID_MODES:
@@ -23,6 +23,10 @@ class InputAssembler:
         self.input_mode = input_mode
 
     @property
+    def needs_aux_frf(self) -> bool:
+        return self.input_mode == "full_frf_lucky"
+
+    @property
     def in_channels(self) -> int:
         if self.input_mode == "mean_only":
             return 3
@@ -30,15 +34,21 @@ class InputAssembler:
             return 3 * self.num_frames
         if self.input_mode == "frames_anchor":
             return 3 * self.num_frames + 3
+        if self.input_mode == "full_frf_lucky":
+            return 3 * self.num_frames + 7
         return 3 * self.num_frames + 4
 
     def assemble(
-        self, frames: torch.Tensor, anchor: torch.Tensor
+        self,
+        frames: torch.Tensor,
+        anchor: torch.Tensor,
+        aux_anchor: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             frames: [B, N, 3, H, W]
             anchor: [B, 3, H, W]
+            aux_anchor: optional [B, 3, H, W] secondary anchor (e.g. I_FRF)
         Returns:
             x_in: [B, C_in, H, W]
             variance_map: [B, 1, H, W]
@@ -49,7 +59,8 @@ class InputAssembler:
                 f"Expected {self.num_frames} frames for mode '{self.input_mode}', got {n}."
             )
 
-        variance_map = compute_temporal_std(frames)
+        with torch.no_grad():
+            variance_map = compute_temporal_std(frames.detach())
 
         if self.input_mode == "mean_only":
             return anchor, variance_map
@@ -59,6 +70,10 @@ class InputAssembler:
             return frames_flat, variance_map
         if self.input_mode == "frames_anchor":
             return torch.cat([frames_flat, anchor], dim=1), variance_map
+        if self.input_mode == "full_frf_lucky":
+            if aux_anchor is None:
+                raise ValueError("aux_anchor (I_FRF) is required for input_mode='full_frf_lucky'.")
+            return torch.cat([frames_flat, aux_anchor, anchor, variance_map], dim=1), variance_map
 
         # full: [I_1 ... I_N, I_anchor, U_var]
         return torch.cat([frames_flat, anchor, variance_map], dim=1), variance_map
