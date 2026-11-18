@@ -253,7 +253,11 @@ class StaticBurstTrainer:
             ):
                 # Never clamp model predictions inside training forward/loss
                 pred = self.model(batch.degraded, apply_stabilizer=self.stabilize_in_train)
-                loss_out = self.loss_fn(pred.restored, batch.gt)
+                loss_out = self.loss_fn(
+                    pred.restored,
+                    batch.gt,
+                    stabilized_frames=pred.stabilized_frames,
+                )
                 scaled_loss = loss_out.total / float(self.grad_accum_steps)
 
             if self.scaler is not None:

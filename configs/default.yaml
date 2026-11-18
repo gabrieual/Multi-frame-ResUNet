@@ -53,6 +53,7 @@ loss:
   edge_weight: 0.05
   ssim_weight: 0.0
   cw_ssim_weight: 0.0
+  align_weight: 0.0
 
 optim:
   lr: 2.0e-4

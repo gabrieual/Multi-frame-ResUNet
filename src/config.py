@@ -105,6 +105,25 @@ ABLATION_PRESETS: Dict[str, Dict[str, Any]] = {
             "cw_ssim_weight": 0.0,
         },
     },
+    # Etapa 3 (A5): Combine Etapa 2 winners (PreAlign + FRF-Lucky + CW-SSIM)
+    # with direct Stage-1 alignment supervision on pre-aligned burst frames.
+    "A5-PreAlign-FRFLucky-CW": {
+        "experiment": {"name": "resunet_A5_pre_align_frf_lucky_cw", "variant": "A5-PreAlign-FRFLucky-CW"},
+        "model": {
+            "input_mode": "full_frf_lucky",
+            "anchor_type": "lucky",
+            "use_pre_align": True,
+            "middle_type": "naf",
+        },
+        "loss": {
+            "charbonnier_weight": 1.0,
+            "fft_weight": 0.05,
+            "edge_weight": 0.05,
+            "ssim_weight": 0.1,
+            "cw_ssim_weight": 0.1,
+            "align_weight": 0.1,
+        },
+    },
 }
 
 

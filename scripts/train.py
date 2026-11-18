@@ -115,6 +115,9 @@ def parse_args() -> argparse.Namespace:
         "--cw-ssim-weight", type=float, default=None, help="Override loss.cw_ssim_weight"
     )
     parser.add_argument(
+        "--align-weight", type=float, default=None, help="Override loss.align_weight"
+    )
+    parser.add_argument(
         "--input-mode",
         type=str,
         default=None,
@@ -187,6 +190,8 @@ def _apply_cli_overrides(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[
         cfg["loss"]["ssim_weight"] = args.ssim_weight
     if args.cw_ssim_weight is not None:
         cfg["loss"]["cw_ssim_weight"] = args.cw_ssim_weight
+    if args.align_weight is not None:
+        cfg["loss"]["align_weight"] = args.align_weight
     if args.input_mode is not None:
         cfg["model"]["input_mode"] = args.input_mode
     if args.pre_align:

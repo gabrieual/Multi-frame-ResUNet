@@ -103,6 +103,7 @@ class TestResUNetPipeline(unittest.TestCase):
             "A4-FRFLucky-CW": 19,  # 3 * 4 + 7 (frames + FRF + Lucky + U_var)
             "A4-PreAlign": 16,     # 3 * 4 + 4
             "A4-Mamba": 16,        # 3 * 4 + 4
+            "A5-PreAlign-FRFLucky-CW": 19,  # 3 * 4 + 7 (PreAlign + FRF + Lucky + U_var)
         }
         burst = torch.rand(2, 4, 3, 64, 64)
         for variant in ABLATION_PRESETS:
@@ -644,6 +645,40 @@ class TestResUNetPipeline(unittest.TestCase):
         self.assertGreater(model.middle[0].row_ssm.a_log.grad.abs().sum().item(), 0.0)
         self.assertIsNotNone(model.middle[0].col_ssm.a_log.grad)
         self.assertGreater(model.middle[0].col_ssm.a_log.grad.abs().sum().item(), 0.0)
+
+    def test_a5_pre_align_frf_lucky_cw_and_align_loss(self) -> None:
+        cfg = _make_mini_cfg(variant="A5-PreAlign-FRFLucky-CW")
+        self.assertTrue(cfg["model"]["use_pre_align"])
+        self.assertEqual(cfg["model"]["input_mode"], "full_frf_lucky")
+        self.assertAlmostEqual(float(cfg["loss"]["cw_ssim_weight"]), 0.1)
+        self.assertAlmostEqual(float(cfg["loss"]["align_weight"]), 0.1)
+
+        model = build_model(cfg)
+        self.assertEqual(model.input_assembler.in_channels, 4 * 3 + 3 + 3 + 1)
+        self.assertIsNotNone(model.pre_aligner)
+
+        loss_fn = build_loss(cfg)
+        x = torch.rand(2, 4, 3, 64, 64)
+        gt = torch.rand(2, 3, 64, 64)
+        pred = model(x)
+        # Even at step 0 (zero-init U-Net head), align loss provides direct gradient to PreStemFlowAligner
+        loss_out = loss_fn(pred.restored, gt, stabilized_frames=pred.stabilized_frames)
+        self.assertIn("align", loss_out.components)
+        self.assertIn("cw_ssim", loss_out.components)
+        self.assertGreater(loss_out.components["align"], 0.0)
+        loss_out.total.backward()
+        assert model.pre_aligner is not None
+        flow_grad = model.pre_aligner.flow_head.weight.grad
+        self.assertIsNotNone(flow_grad)
+        self.assertGreater(flow_grad.abs().sum().item(), 0.0)
+
+        p48_a5 = sum(
+            p.numel()
+            for p in build_model(
+                load_config(RESUNET_ROOT / "configs" / "default.yaml", variant="A5-PreAlign-FRFLucky-CW")
+            ).parameters()
+        )
+        print(f"[verified A5-PreAlign-FRFLucky-CW base_ch=48 params] -> {p48_a5:,}")
 
 
 if __name__ == "__main__":
