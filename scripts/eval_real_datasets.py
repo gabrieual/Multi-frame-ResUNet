@@ -13,6 +13,7 @@ import csv
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -226,54 +227,85 @@ def _discover_rlr_at(root: Path) -> List[RealSceneSpec]:
     return specs
 
 
-def _probe_video(video_path: Path) -> Tuple[int, int, float, int]:
-    """Return `(width, height, fps, total_frames)` using ffprobe."""
-    cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "stream=width,height,r_frame_rate,nb_frames",
-        "-of",
-        "json",
-        str(video_path),
-    ]
-    out = subprocess.check_output(cmd, text=True)
-    stream = json.loads(out)["streams"][0]
-    w = int(stream["width"])
-    h = int(stream["height"])
-    num, den = stream["r_frame_rate"].split("/")
-    fps = float(num) / max(float(den), 1.0)
-    nb_frames = int(stream.get("nb_frames") or 0)
-    if nb_frames <= 0:
-        cnt_cmd = [
-            "ffprobe",
+def _resolve_ffmpeg_bins() -> Tuple[Optional[str], Optional[str]]:
+    ffmpeg_bin = shutil.which("ffmpeg")
+    ffprobe_bin = shutil.which("ffprobe")
+    if ffmpeg_bin is None:
+        try:
+            import imageio_ffmpeg  # type: ignore
+
+            ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            ffmpeg_bin = None
+    return ffmpeg_bin, ffprobe_bin
+
+
+def _probe_video(video_path: Path, ffmpeg_bin: str, ffprobe_bin: Optional[str]) -> Tuple[int, int, float, int]:
+    """Return `(width, height, fps, total_frames)` using ffprobe or ffmpeg stderr."""
+    if ffprobe_bin:
+        cmd = [
+            ffprobe_bin,
             "-v",
             "error",
             "-select_streams",
             "v:0",
-            "-count_packets",
             "-show_entries",
-            "stream=nb_read_packets",
+            "stream=width,height,r_frame_rate,nb_frames",
             "-of",
-            "csv=p=0",
+            "json",
             str(video_path),
         ]
-        nb_frames = int(subprocess.check_output(cnt_cmd, text=True).strip())
-    return w, h, fps, nb_frames
+        out = subprocess.check_output(cmd, text=True)
+        stream = json.loads(out)["streams"][0]
+        w = int(stream["width"])
+        h = int(stream["height"])
+        num, den = stream["r_frame_rate"].split("/")
+        fps = float(num) / max(float(den), 1.0)
+        nb_frames = int(stream.get("nb_frames") or 0)
+        if nb_frames <= 0:
+            cnt_cmd = [
+                ffprobe_bin,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-count_packets",
+                "-show_entries",
+                "stream=nb_read_packets",
+                "-of",
+                "csv=p=0",
+                str(video_path),
+            ]
+            nb_frames = int(subprocess.check_output(cnt_cmd, text=True).strip())
+        return w, h, fps, nb_frames
+
+    proc = subprocess.run([ffmpeg_bin, "-i", str(video_path)], capture_output=True, text=True)
+    info = proc.stderr or ""
+    dur_m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", info)
+    size_m = re.search(r"Stream\s+#\d+:\d+.*?Video:.*?,\s*(\d{2,5})x(\d{2,5})", info)
+    fps_m = re.search(r"(\d+(?:\.\d+)?)\s*(?:fps|tbr)", info)
+    if not size_m:
+        raise RuntimeError(f"Could not probe video dimensions via {ffmpeg_bin} for {video_path}")
+    w, h = int(size_m.group(1)), int(size_m.group(2))
+    fps = float(fps_m.group(1)) if fps_m else 30.0
+    if dur_m:
+        dur_s = int(dur_m.group(1)) * 3600 + int(dur_m.group(2)) * 60 + float(dur_m.group(3))
+        total = max(1, int(round(dur_s * fps)))
+    else:
+        total = 1
+    return w, h, fps, total
 
 
 def _load_mp4_center_burst(video_path: Path, num_frames: int, stride: int = 1) -> torch.Tensor:
-    """Decode a consecutive center burst `[T, 3, H, W]` in `[0, 1]` via ffmpeg, PyAV, or torchvision."""
-    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
-        w, h, fps, total = _probe_video(video_path)
+    """Decode a consecutive center burst `[T, 3, H, W]` in `[0, 1]` via ffmpeg, imageio-ffmpeg, PyAV, cv2, or torchvision."""
+    ffmpeg_bin, ffprobe_bin = _resolve_ffmpeg_bins()
+    if ffmpeg_bin:
+        w, h, fps, total = _probe_video(video_path, ffmpeg_bin=ffmpeg_bin, ffprobe_bin=ffprobe_bin)
         span = (num_frames - 1) * max(stride, 1) + 1
         start_frame = max(0, (total - span) // 2)
         start_sec = start_frame / max(fps, 1.0)
         cmd = [
-            "ffmpeg",
+            ffmpeg_bin,
             "-v",
             "error",
             "-ss",
@@ -301,6 +333,37 @@ def _load_mp4_center_burst(video_path: Path, num_frames: int, stride: int = 1) -
             idx = np.linspace(0, tensor.shape[0] - 1, num_frames, dtype=int)
             tensor = tensor[idx]
         return tensor
+
+    try:
+        import cv2  # type: ignore
+
+        cap = cv2.VideoCapture(str(video_path))
+        if cap.isOpened():
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            step = max(stride, 1)
+            span = (num_frames - 1) * step + 1
+            start_frame = max(0, (total - span) // 2) if total > 0 else 0
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            collected_cv: List[np.ndarray] = []
+            for _ in range(num_frames):
+                ok, frame_bgr = cap.read()
+                if not ok:
+                    break
+                collected_cv.append(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
+                for _ in range(step - 1):
+                    if not cap.grab():
+                        break
+            cap.release()
+            if collected_cv:
+                arr = np.stack(collected_cv, axis=0)
+                tensor = torch.from_numpy(arr).permute(0, 3, 1, 2).contiguous().float() / 255.0
+                if tensor.shape[0] < num_frames:
+                    idx = np.linspace(0, tensor.shape[0] - 1, num_frames, dtype=int)
+                    tensor = tensor[idx]
+                return tensor
+        cap.release()
+    except ImportError:
+        pass
 
     try:
         import av  # type: ignore
